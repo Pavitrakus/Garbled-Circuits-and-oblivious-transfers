@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CipherMind — Interactive Cryptography</title>
+  <meta name="description" content="An interactive, game-like visualization of advanced cryptographic concepts including Garbled Circuits, PSI, BGW, and more.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- LOADING SCREEN -->
+<div id="loader">
+  <div class="loader-inner">
+    <div class="loader-ring"></div>
+    <div class="loader-text">INITIALIZING</div>
+  </div>
+</div>
+
+<!-- TOP NAV -->
+<nav id="topnav">
+  <div class="nav-brand">CIPHER<span>MIND</span></div>
+  <div class="nav-chapters">
+    <button class="nc active" data-target="ch1">01 · Jailbreak</button>
+    <button class="nc" data-target="ch2">02 · Garbled</button>
+    <button class="nc" data-target="ch3">03 · Malleable</button>
+    <button class="nc" data-target="ch4">04 · Reputation</button>
+    <button class="nc" data-target="ch5">05 · BGW</button>
+    <button class="nc" data-target="ch6">06 · Optimizations</button>
+    <button class="nc" data-target="ch7">07 · PSI</button>
+  </div>
+  <div class="nav-progress">
+    <div id="nav-bar"></div>
+  </div>
+</nav>
+
+<!-- ============================================================ -->
+<!-- CH 1 – LLM JAILBREAK                                         -->
+<!-- ============================================================ -->
+<section id="ch1" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 01</div>
+    <h1 class="ch-title">LLM <em>Jailbreak</em></h1>
+    <p class="ch-desc">Language models have safety guardrails. But they can be tricked. Play each scenario to see exactly how.</p>
+
+    <div class="game-zone" id="jailbreak-game">
+      <div class="jb-left">
+        <div class="scenario-tabs">
+          <button class="stab active" data-scenario="direct">Direct Ask</button>
+          <button class="stab" data-scenario="roleplay">Roleplay</button>
+          <button class="stab" data-scenario="injection">Injection</button>
+        </div>
+        <div class="terminal-frame">
+          <div class="tf-bar">
+            <span></span><span></span><span></span>
+            <span class="tf-label">ai-sandbox.sh</span>
+          </div>
+          <div class="tf-body" id="jb-terminal">
+            <div class="t-line t-user">USER → Write flat earth misinformation tweets.</div>
+            <div class="t-line t-ai typing" id="jb-response">
+              <!-- filled by JS -->
+            </div>
+          </div>
+        </div>
+        <div class="jb-controls">
+          <button class="play-btn" id="jb-play">▶ Run Scenario</button>
+        </div>
+      </div>
+
+      <div class="jb-right">
+        <div class="explain-card" id="jb-explain">
+          <div class="ec-tag">DIRECT ATTACK</div>
+          <h3>Guardrails Active</h3>
+          <p>The model has built-in ethical guidelines. A direct request for harmful content is immediately detected and refused. The model recognizes the intent and responds with a refusal message.</p>
+          <div class="ec-verdict safe">
+            <span class="v-dot"></span>
+            <span>BLOCKED — Guardrails Active</span>
+          </div>
+        </div>
+        <div class="concept-flow" id="jb-flow">
+          <div class="flow-node fn-user active">User Input</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node fn-guard" id="fn-guard">Safety Filter</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node fn-model" id="fn-model">LLM Model</div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node fn-out" id="fn-out">Output</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout" id="ch1-callout">
+      <div class="callout-icon">⚡</div>
+      <div>
+        <strong>Prompt Injection</strong> is like SQL Injection for LLMs — the model cannot distinguish between system instructions and user-supplied text, so malicious input overwrites the original intent.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 2 – GARBLED CIRCUITS                                      -->
+<!-- ============================================================ -->
+<section id="ch2" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 02</div>
+    <h1 class="ch-title">Garbled <em>Circuits</em></h1>
+    <p class="ch-desc">Two parties compute a joint function without revealing their private inputs. Step through the entire protocol interactively.</p>
+
+    <div class="game-zone" id="garbled-game">
+      <div class="gc-split">
+
+        <!-- PARTY INPUTS -->
+        <div class="party-panel" id="alice-panel">
+          <div class="party-label">ALICE (Garbler)</div>
+          <div class="party-wealth">
+            <span class="pw-label">Wealth</span>
+            <div class="pw-slider-wrap">
+              <input type="range" min="1" max="9" value="6" id="alice-val" class="pw-slider">
+              <span class="pw-num" id="alice-num">6</span>
+            </div>
+          </div>
+          <div class="wire-box" id="alice-wires">
+            <div class="wb-label">Wire Labels (t)</div>
+            <div class="wire-row">
+              <span class="wire-label-item" id="t0">t₀ = <code id="t0-val">—</code></span>
+              <span class="wire-label-item" id="t1">t₁ = <code id="t1-val">—</code></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CIRCUIT CANVAS -->
+        <div class="circuit-center">
+          <div class="circuit-title">AND Gate — Is Alice Richer?</div>
+          <canvas id="gc-canvas" width="340" height="200"></canvas>
+          <div class="gc-table-wrap">
+            <div class="gc-table-label">Garbled Truth Table</div>
+            <table class="garbled-table" id="gc-table">
+              <thead>
+                <tr><th>Row</th><th>Encrypted Output</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>00</td><td class="et" id="et-00">—</td><td class="es" id="es-00">locked</td></tr>
+                <tr><td>01</td><td class="et" id="et-01">—</td><td class="es" id="es-01">locked</td></tr>
+                <tr><td>10</td><td class="et" id="et-10">—</td><td class="es" id="es-10">locked</td></tr>
+                <tr><td>11</td><td class="et" id="et-11">—</td><td class="es" id="es-11">locked</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="gc-steps">
+            <button class="step-btn" id="gc-step">Step →</button>
+            <div class="step-counter" id="gc-step-counter">Step 0 / 5</div>
+          </div>
+        </div>
+
+        <!-- BOB PANEL -->
+        <div class="party-panel" id="bob-panel">
+          <div class="party-label">BOB (Evaluator)</div>
+          <div class="party-wealth">
+            <span class="pw-label">Wealth</span>
+            <div class="pw-slider-wrap">
+              <input type="range" min="1" max="9" value="4" id="bob-val" class="pw-slider">
+              <span class="pw-num" id="bob-num">4</span>
+            </div>
+          </div>
+          <div class="wire-box" id="bob-wires">
+            <div class="wb-label">Wire Labels (s)</div>
+            <div class="wire-row">
+              <span class="wire-label-item" id="s0">s₀ = <code id="s0-val">—</code></span>
+              <span class="wire-label-item" id="s1">s₁ = <code id="s1-val">—</code></span>
+            </div>
+          </div>
+          <div class="ot-display" id="ot-display">
+            <div class="ot-title">Oblivious Transfer</div>
+            <div class="ot-desc">Bob will fetch exactly one wire label without revealing which one.</div>
+            <div class="ot-status" id="ot-status">Waiting…</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gc-result-bar" id="gc-result-bar">
+        <div class="grb-inner" id="grb-inner">
+          Compute to reveal result…
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-icon">🔑</div>
+      <div>
+        Each gate requires <strong>4 × 128-bit encryptions</strong>. Entire circuits can be gigabytes in size — that's why optimizations (Chapter 6) matter enormously.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 3 – MALLEABLE ENCRYPTION                                  -->
+<!-- ============================================================ -->
+<section id="ch3" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 03</div>
+    <h1 class="ch-title">Malleable <em>Encryption</em></h1>
+    <p class="ch-desc">An attacker can flip specific bits in ciphertext to alter the decrypted plaintext — without knowing the key.</p>
+
+    <div class="game-zone" id="malleable-game">
+      <div class="me-layout">
+
+        <div class="me-section">
+          <div class="me-sec-label">① PLAINTEXT</div>
+          <div class="word-display" id="me-plaintext">SANTANDER</div>
+        </div>
+
+        <div class="me-arrow">XOR ⊕</div>
+
+        <div class="me-section">
+          <div class="me-sec-label">② KEYSTREAM (B)</div>
+          <div class="bit-grid" id="me-keystream">
+            <!-- filled by JS -->
+          </div>
+        </div>
+
+        <div class="me-arrow">→</div>
+
+        <div class="me-section">
+          <div class="me-sec-label">③ CIPHERTEXT (C) — Click bits to flip!</div>
+          <div class="bit-grid" id="me-ciphertext">
+            <!-- filled by JS -->
+          </div>
+          <button class="play-btn" id="me-reset" style="margin-top:1rem">↺ Reset</button>
+        </div>
+
+        <div class="me-arrow">XOR ⊕ B</div>
+
+        <div class="me-section">
+          <div class="me-sec-label">④ DECRYPTED (M')</div>
+          <div class="word-display" id="me-decrypted">SANTANDER</div>
+          <div class="me-verdict" id="me-verdict"></div>
+        </div>
+
+      </div>
+
+      <div class="me-explain-row">
+        <div class="explain-card" style="flex:1">
+          <div class="ec-tag">XOR STREAM CIPHER</div>
+          <h3>How Flipping Works</h3>
+          <p>C = M ⊕ B. If you flip bit i in C, then upon decryption:<br>
+          M' = C' ⊕ B = (M ⊕ B ⊕ Δ) ⊕ B = M ⊕ Δ<br><br>
+          The attacker flips exactly the bits needed to change <strong>S→S, A→A, N→L</strong> etc. without ever touching the key B.</p>
+        </div>
+        <div class="explain-card" style="flex:1">
+          <div class="ec-tag">HOMOMORPHIC POWER</div>
+          <h3>RSA Multiplication</h3>
+          <p>RSA is multiplicatively homomorphic:<br>
+          C₁ × C₂ = (M₁ᵉ)(M₂ᵉ) = (M₁×M₂)ᵉ mod n<br><br>
+          Multiply ciphertexts → multiply messages. An attacker can double a bid from 13→26 by computing C × 2ᵉ mod n — all without the private key.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 4 – REPUTATION LAG ATTACK                                 -->
+<!-- ============================================================ -->
+<section id="ch4" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 04</div>
+    <h1 class="ch-title">Reputation <em>Lag</em></h1>
+    <p class="ch-desc">Reputation systems have an inherent time delay. Click a node to place an attacker and watch how fast (or slow) bad reputation spreads.</p>
+
+    <div class="game-zone" id="reputation-game">
+      <div class="rep-layout">
+        <div class="rep-canvas-wrap">
+          <canvas id="rep-canvas" width="520" height="360"></canvas>
+          <div class="rep-hint">Click any node to start attack</div>
+        </div>
+        <div class="rep-sidebar">
+          <div class="rep-stats">
+            <div class="rs-item">
+              <span class="rs-label">Attacker Node</span>
+              <span class="rs-val" id="rep-attacker-id">None</span>
+            </div>
+            <div class="rs-item">
+              <span class="rs-label">Victims Scammed</span>
+              <span class="rs-val" id="rep-victims">0</span>
+            </div>
+            <div class="rs-item">
+              <span class="rs-label">Reputation Score</span>
+              <span class="rs-val" id="rep-score">100</span>
+            </div>
+            <div class="rs-item">
+              <span class="rs-label">Lag Window</span>
+              <span class="rs-val" id="rep-lag">0 ticks</span>
+            </div>
+          </div>
+          <div class="rep-bar-wrap">
+            <div class="rep-bar-label">Reputation Decay</div>
+            <div class="rep-bar-bg">
+              <div class="rep-bar-fill" id="rep-bar-fill"></div>
+            </div>
+          </div>
+          <div class="rep-attacks">
+            <div class="ra-title">Attack Variants</div>
+            <button class="ra-btn active" data-mode="lag">Reputation Lag</button>
+            <button class="ra-btn" data-mode="sybil">Sybil Attack</button>
+            <button class="ra-btn" data-mode="exit">Exit Scam</button>
+          </div>
+          <button class="play-btn" id="rep-reset">↺ Reset Network</button>
+        </div>
+      </div>
+
+      <div class="rep-log-wrap">
+        <div class="rep-log-title">Event Log</div>
+        <div class="rep-log" id="rep-log"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 5 – BGW / SHAMIR SECRET SHARING                           -->
+<!-- ============================================================ -->
+<section id="ch5" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 05</div>
+    <h1 class="ch-title">BGW & <em>Shamir</em></h1>
+    <p class="ch-desc">Drag the share points on the polynomial to reconstruct the secret at x = 0. Add noise to simulate a malicious party — watch error correction kick in.</p>
+
+    <div class="game-zone" id="bgw-game">
+      <div class="bgw-layout">
+        <div class="bgw-canvas-wrap">
+          <canvas id="bgw-canvas" width="560" height="380" style="cursor:crosshair"></canvas>
+          <div class="bgw-hint">Drag share points • Add error below</div>
+        </div>
+        <div class="bgw-sidebar">
+          <div class="bgw-controls">
+            <div class="bc-label">Secret (at x=0)</div>
+            <div class="secret-display" id="bgw-secret">?</div>
+
+            <div class="bc-label">Threshold (t+1 shares needed)</div>
+            <div class="threshold-row">
+              <button class="th-btn" id="th-minus">−</button>
+              <span id="th-val">3</span>
+              <button class="th-btn" id="th-plus">+</button>
+            </div>
+
+            <div class="bc-label">Parties (n)</div>
+            <div class="threshold-row">
+              <button class="th-btn" id="pa-minus">−</button>
+              <span id="pa-val">5</span>
+              <button class="th-btn" id="pa-plus">+</button>
+            </div>
+
+            <div class="bc-label">Inject Malicious Share</div>
+            <div class="error-row">
+              <select id="err-party" class="err-select">
+                <option>Party 1</option>
+                <option>Party 2</option>
+                <option>Party 3</option>
+                <option>Party 4</option>
+                <option>Party 5</option>
+              </select>
+              <button class="play-btn" id="inject-err">Corrupt!</button>
+            </div>
+            <div class="err-status" id="err-status"></div>
+
+            <button class="play-btn" style="margin-top:1rem;width:100%" id="bgw-reset">↺ Reset</button>
+          </div>
+
+          <div class="bgw-math">
+            <div class="bm-label">Lagrange Interpolation</div>
+            <div class="bm-eq" id="bgw-eq">S = Σ λᵢ · P(αᵢ)</div>
+            <div class="bm-detail" id="bgw-detail">Drag points to update…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-icon">🛡</div>
+      <div>
+        <strong>Reed-Solomon Error Correction:</strong> If n > 3t, the secret can be reconstructed even with t maliciously altered shares. The polynomial geometry makes fake points detectable — they don't lie on the valid degree-t curve.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 6 – GARBLED CIRCUIT OPTIMIZATIONS                        -->
+<!-- ============================================================ -->
+<section id="ch6" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 06</div>
+    <h1 class="ch-title">Circuit <em>Optimizations</em></h1>
+    <p class="ch-desc">Each optimization technique slashes communication cost. Click a technique to animate how it reduces the garbled table — from 4 ciphertexts down to 0.</p>
+
+    <div class="game-zone" id="gc-opt-game">
+      <div class="opt-layout">
+        <div class="opt-tech-list">
+          <div class="ot-item active" data-opt="baseline">
+            <div class="oti-num">0</div>
+            <div class="oti-body">
+              <div class="oti-name">Baseline</div>
+              <div class="oti-cost">4 ciphertexts / gate</div>
+            </div>
+          </div>
+          <div class="ot-item" data-opt="pnp">
+            <div class="oti-num">1</div>
+            <div class="oti-body">
+              <div class="oti-name">Point & Permute</div>
+              <div class="oti-cost">4c → faster decrypt</div>
+            </div>
+          </div>
+          <div class="ot-item" data-opt="grr3">
+            <div class="oti-num">2</div>
+            <div class="oti-body">
+              <div class="oti-name">GRR3</div>
+              <div class="oti-cost">4 → 3 ciphertexts</div>
+            </div>
+          </div>
+          <div class="ot-item" data-opt="freexor">
+            <div class="oti-num">3</div>
+            <div class="oti-body">
+              <div class="oti-name">Free XOR</div>
+              <div class="oti-cost">XOR gates → 0c</div>
+            </div>
+          </div>
+          <div class="ot-item" data-opt="halfgates">
+            <div class="oti-num">4</div>
+            <div class="oti-body">
+              <div class="oti-name">Half Gates</div>
+              <div class="oti-cost">2c AND + 0c XOR</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="opt-visual">
+          <canvas id="opt-canvas" width="440" height="300"></canvas>
+          <div class="opt-explain" id="opt-explain">
+            <div class="oe-name" id="oe-name">Baseline Garbled Circuit</div>
+            <div class="oe-desc" id="oe-desc">Original Yao construction. Every AND gate produces a shuffled table with 4 ciphertext rows. The evaluator must attempt all 4 decryptions to find the correct output — slow and large.</div>
+            <div class="oe-cost-bar">
+              <div class="ocb-label">AND Gate Cost</div>
+              <div class="ocb-bar-bg">
+                <div class="ocb-fill" id="ocb-fill" style="width:100%"></div>
+              </div>
+              <div class="ocb-num" id="ocb-num">4 ciphertexts</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CH 7 – PRIVATE SET INTERSECTION                              -->
+<!-- ============================================================ -->
+<section id="ch7" class="chapter">
+  <div class="chapter-shell">
+
+    <div class="ch-label">CHAPTER 07</div>
+    <h1 class="ch-title">Private Set <em>Intersection</em></h1>
+    <p class="ch-desc">Alice and Bob each have a private set. Click Run to animate the DH-based PSI protocol — only the intersection is revealed, nothing else.</p>
+
+    <div class="game-zone" id="psi-game">
+      <div class="psi-layout">
+
+        <div class="psi-sets">
+          <div class="psi-party">
+            <div class="psi-party-label">ALICE'S CONTACTS</div>
+            <div class="psi-items" id="psi-alice">
+              <div class="psi-item" data-val="alice">alice@ex.com</div>
+              <div class="psi-item" data-val="bob">bob@ex.com</div>
+              <div class="psi-item" data-val="charlie">charlie@ex.com</div>
+              <div class="psi-item" data-val="diana">diana@ex.com</div>
+              <div class="psi-item" data-val="eve">eve@ex.com</div>
+            </div>
+          </div>
+
+          <div class="psi-center-col">
+            <canvas id="psi-canvas" width="200" height="300"></canvas>
+            <div class="psi-intersection" id="psi-intersection">
+              <div class="pi-label">INTERSECTION</div>
+              <div class="pi-items" id="pi-items">
+                — run to reveal —
+              </div>
+            </div>
+          </div>
+
+          <div class="psi-party">
+            <div class="psi-party-label">BOB'S CONTACTS</div>
+            <div class="psi-items" id="psi-bob">
+              <div class="psi-item" data-val="bob">bob@ex.com</div>
+              <div class="psi-item" data-val="charlie">charlie@ex.com</div>
+              <div class="psi-item" data-val="frank">frank@ex.com</div>
+              <div class="psi-item" data-val="grace">grace@ex.com</div>
+              <div class="psi-item" data-val="alice">alice@ex.com</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="psi-protocol-steps">
+          <div class="ps-step" id="pss-1">
+            <div class="ps-num">1</div>
+            <div class="ps-body">
+              <div class="ps-title">Alice hashes: H(x)ᵃ</div>
+              <div class="ps-desc">Alice raises each item to her private exponent a. Cannot be reversed without a.</div>
+            </div>
+          </div>
+          <div class="ps-arrow">→</div>
+          <div class="ps-step" id="pss-2">
+            <div class="ps-num">2</div>
+            <div class="ps-body">
+              <div class="ps-title">Bob applies: H(x)ᵃᵇ & H(y)ᵇ</div>
+              <div class="ps-desc">Bob raises Alice's values by b, and hashes his own set with b.</div>
+            </div>
+          </div>
+          <div class="ps-arrow">→</div>
+          <div class="ps-step" id="pss-3">
+            <div class="ps-num">3</div>
+            <div class="ps-body">
+              <div class="ps-title">Alice applies: H(y)ᵃᵇ</div>
+              <div class="ps-desc">Alice raises Bob's H(y)ᵇ values by a — now both sides have the same keys for matches.</div>
+            </div>
+          </div>
+          <div class="ps-arrow">→</div>
+          <div class="ps-step" id="pss-4">
+            <div class="ps-num">4</div>
+            <div class="ps-body">
+              <div class="ps-title">Compare & Intersect</div>
+              <div class="ps-desc">Items where H(x)ᵃᵇ = H(y)ᵃᵇ are in the intersection. Nothing else is revealed.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="psi-controls">
+          <button class="play-btn large" id="psi-run">▶ Run PSI Protocol</button>
+          <button class="play-btn" id="psi-reset">↺ Reset</button>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="callout-icon">🔒</div>
+      <div>
+        <strong>Why not just hash?</strong> Because an attacker can hash every possible phone number offline (dictionary attack) and compare against the published hashes. The DH exponentiation requires interaction — forcing computation to be online and per-party.
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer id="footer">
+  <span>CIPHER<strong>MIND</strong></span> · Cryptography Visualization Suite · Built for Vadapalli
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
