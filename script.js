@@ -167,223 +167,1492 @@ document.querySelectorAll('.stab').forEach(b => {
 });
 setJbScenario('direct');
 
-/* ══════════════════════════════════════════════════════════
-   CHAPTER 2 — GARBLED CIRCUITS
-══════════════════════════════════════════════════════════ */
-const gcCanvas = document.getElementById('gc-canvas');
-const gcCtx    = gcCanvas.getContext('2d');
-
+/* ── Utility used by Chapter 6 (GC Optimizations) ──── */
 function randHex(bytes) {
   let h = '';
   for (let i = 0; i < bytes; i++) h += Math.floor(Math.random()*256).toString(16).padStart(2,'0');
   return h;
 }
 
-let gcStep = 0;
-let gcMaxSteps = 5;
-let gcAlice = 6, gcBob = 4;
-let gcWires = {};
+/* ══════════════════════════════════════════════════════════
+   CHAPTER 2 — GARBLED CIRCUITS (General-Purpose Builder)
+══════════════════════════════════════════════════════════ */
+(() => {
+'use strict';
 
-function gcGenWires() {
-  gcWires = {
-    t0: randHex(8), t1: randHex(8),
-    s0: randHex(8), s1: randHex(8),
-    r0: randHex(8), r1: randHex(8),
+/* ── CONSTANTS ────────────────────────────────────────── */
+const GATE_W = 64, GATE_H = 44;
+const PORT_R = 5, BUBBLE_R = 5;
+const INPUT_ZONE_X = 70, OUTPUT_ZONE_X = 790;
+const INPUT_NODE_R = 12, OUTPUT_NODE_R = 12;
+const COLORS = {
+  alice: '#7fff6e', bob: '#6ec8ff', gate: '#c86eff',
+  output: '#ffcc6e', wire: 'rgba(255,255,255,0.2)',
+  wireActive: '#c86eff', portEmpty: 'rgba(255,255,255,0.15)',
+  portFill: '#6ec8ff', bg: '#060606', grid: 'rgba(255,255,255,0.025)',
+};
+
+/* ── GATE TRUTH TABLES ────────────────────────────────── */
+const GATE_EVAL = {
+  AND: (a,b) => a & b, OR: (a,b) => a | b, XOR: (a,b) => a ^ b,
+  NAND: (a,b) => (a & b) ^ 1, NOR: (a,b) => (a | b) ^ 1,
+  XNOR: (a,b) => (a ^ b) ^ 1, NOT: (a) => a ^ 1,
+};
+const GATE_INPUTS = { AND:2, OR:2, XOR:2, NAND:2, NOR:2, XNOR:2, NOT:1 };
+
+/* ── STATE ────────────────────────────────────────────── */
+const S = {
+  nodes: [],       // { id, type, gateType?, x, y, party?, bitIdx? }
+  conns: [],       // { id, from, to, toPort }
+  alice: { count: 2, values: [0, 1] },
+  bob:   { count: 2, values: [1, 0] },
+  outputCount: 1,
+  // UI state
+  mode: 'idle',    // idle, placing, wiring, dragging, deleting
+  placingGate: null,
+  wiringFrom: null, // nodeId
+  dragNode: null,
+  dragOff: { x:0, y:0 },
+  mouseX: 0, mouseY: 0,
+  hoverNode: null, hoverPort: null,
+  // Protocol state
+  step: 0,
+  wireLabels: {},    // nodeId -> { l0, l1 }
+  garbledTables: {}, // gateId -> [{ inputs, enc, outLabel }]
+  evalOrder: [],
+  evalLabels: {},    // nodeId -> label (hex string)
+  evalResults: {},   // nodeId -> bit value
+  nextId: 1,
+};
+
+/* ── CANVAS SETUP ─────────────────────────────────────── */
+const canvas = document.getElementById('gcb-canvas');
+const ctx = canvas.getContext('2d');
+
+function randHex(n) {
+  let h = '';
+  for (let i = 0; i < n; i++) h += Math.floor(Math.random()*256).toString(16).padStart(2,'0');
+  return h;
+}
+
+/* ── NODE HELPERS ─────────────────────────────────────── */
+function newId() { return S.nextId++; }
+
+function addNode(type, gateType, x, y, extra={}) {
+  const n = { id: newId(), type, gateType: gateType||null, x, y, ...extra };
+  S.nodes.push(n);
+  return n;
+}
+
+function removeNode(id) {
+  S.nodes = S.nodes.filter(n => n.id !== id);
+  S.conns = S.conns.filter(c => c.from !== id && c.to !== id);
+}
+
+function addConn(from, to, toPort) {
+  // Remove existing connection to this input port
+  S.conns = S.conns.filter(c => !(c.to === to && c.toPort === toPort));
+  const c = { id: newId(), from, to, toPort };
+  S.conns.push(c);
+  return c;
+}
+
+function removeConn(id) {
+  S.conns = S.conns.filter(c => c.id !== id);
+}
+
+function getNode(id) { return S.nodes.find(n => n.id === id); }
+function getGates() { return S.nodes.filter(n => n.type === 'gate'); }
+function getInputNodes(party) { return S.nodes.filter(n => n.type === 'input' && n.party === party).sort((a,b)=>a.bitIdx-b.bitIdx); }
+function getOutputNodes() { return S.nodes.filter(n => n.type === 'output').sort((a,b)=>a.bitIdx-b.bitIdx); }
+function getInputConns(nodeId) { return S.conns.filter(c => c.to === nodeId).sort((a,b)=>a.toPort-b.toPort); }
+function getOutputConns(nodeId) { return S.conns.filter(c => c.from === nodeId); }
+
+/* ── PORT POSITIONS ───────────────────────────────────── */
+function getPortPos(nodeId, portType, portIdx) {
+  const n = getNode(nodeId);
+  if (!n) return { x:0, y:0 };
+
+  if (n.type === 'input') {
+    return { x: n.x + INPUT_NODE_R + 4, y: n.y }; // output port
+  }
+  if (n.type === 'output') {
+    return { x: n.x - OUTPUT_NODE_R - 4, y: n.y }; // input port
+  }
+  if (n.type === 'gate') {
+    const numIn = GATE_INPUTS[n.gateType] || 2;
+    if (portType === 'in') {
+      if (numIn === 1) return { x: n.x, y: n.y };
+      const spacing = GATE_H * 0.35;
+      return { x: n.x, y: n.y + (portIdx === 0 ? -spacing : spacing) };
+    } else {
+      return { x: n.x + GATE_W, y: n.y };
+    }
+  }
+  return { x: n.x, y: n.y };
+}
+
+/* ── TOPOLOGICAL SORT ─────────────────────────────────── */
+function topSort() {
+  const gates = getGates();
+  const inDeg = {};
+  const adj = {};
+  gates.forEach(g => { inDeg[g.id] = 0; adj[g.id] = []; });
+
+  S.conns.forEach(c => {
+    const fn = getNode(c.from);
+    const tn = getNode(c.to);
+    if (fn && tn && fn.type === 'gate' && tn.type === 'gate') {
+      inDeg[tn.id] = (inDeg[tn.id]||0) + 1;
+      if (!adj[fn.id]) adj[fn.id] = [];
+      adj[fn.id].push(tn.id);
+    }
+  });
+
+  // Gates with inputs only from input nodes have inDeg 0
+  gates.forEach(g => {
+    const inConns = getInputConns(g.id);
+    inConns.forEach(c => {
+      const fn = getNode(c.from);
+      if (fn && fn.type === 'gate') {
+        // already counted
+      }
+    });
+  });
+
+  // Recompute proper inDeg
+  gates.forEach(g => {
+    inDeg[g.id] = 0;
+  });
+  S.conns.forEach(c => {
+    const fn = getNode(c.from);
+    const tn = getNode(c.to);
+    if (tn && tn.type === 'gate' && fn && fn.type === 'gate') {
+      inDeg[tn.id]++;
+    }
+  });
+
+  const queue = gates.filter(g => inDeg[g.id] === 0).map(g => g.id);
+  const order = [];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    order.push(cur);
+    (adj[cur]||[]).forEach(nid => {
+      inDeg[nid]--;
+      if (inDeg[nid] === 0) queue.push(nid);
+    });
+  }
+  return order;
+}
+
+/* ── CIRCUIT EVALUATION (plaintext) ───────────────────── */
+function evaluateCircuit() {
+  const values = {};
+  // Set input values
+  getInputNodes('alice').forEach((n,i) => { values[n.id] = S.alice.values[i] || 0; });
+  getInputNodes('bob').forEach((n,i) => { values[n.id] = S.bob.values[i] || 0; });
+
+  const order = topSort();
+  order.forEach(gid => {
+    const g = getNode(gid);
+    if (!g) return;
+    const inConns = getInputConns(gid);
+    const numIn = GATE_INPUTS[g.gateType];
+    if (numIn === 1) {
+      const c0 = inConns.find(c => c.toPort === 0);
+      const a = c0 ? (values[c0.from] ?? 0) : 0;
+      values[gid] = GATE_EVAL[g.gateType](a);
+    } else {
+      const c0 = inConns.find(c => c.toPort === 0);
+      const c1 = inConns.find(c => c.toPort === 1);
+      const a = c0 ? (values[c0.from] ?? 0) : 0;
+      const b = c1 ? (values[c1.from] ?? 0) : 0;
+      values[gid] = GATE_EVAL[g.gateType](a, b);
+    }
+  });
+
+  // Propagate to outputs
+  getOutputNodes().forEach(on => {
+    const c = getInputConns(on.id)[0];
+    values[on.id] = c ? (values[c.from] ?? 0) : 0;
+  });
+
+  return values;
+}
+
+/* ── CIRCUIT DEPTH ────────────────────────────────────── */
+function circuitDepth() {
+  const depths = {};
+  getInputNodes('alice').concat(getInputNodes('bob')).forEach(n => depths[n.id] = 0);
+  const order = topSort();
+  order.forEach(gid => {
+    const inConns = getInputConns(gid);
+    let maxD = 0;
+    inConns.forEach(c => {
+      maxD = Math.max(maxD, (depths[c.from] ?? 0) + 1);
+    });
+    depths[gid] = maxD;
+  });
+  return Math.max(0, ...Object.values(depths));
+}
+
+/* ── SYNC INPUT/OUTPUT NODES ──────────────────────────── */
+function syncIONodes() {
+  // Sync Alice inputs
+  const aliceNodes = getInputNodes('alice');
+  while (aliceNodes.length < S.alice.count) {
+    const idx = aliceNodes.length;
+    const y = computeInputY('alice', idx, S.alice.count);
+    const n = addNode('input', null, INPUT_ZONE_X, y, { party: 'alice', bitIdx: idx });
+    aliceNodes.push(n);
+  }
+  while (aliceNodes.length > S.alice.count) {
+    const rem = aliceNodes.pop();
+    removeNode(rem.id);
+  }
+
+  // Sync Bob inputs
+  const bobNodes = getInputNodes('bob');
+  while (bobNodes.length < S.bob.count) {
+    const idx = bobNodes.length;
+    const y = computeInputY('bob', idx, S.bob.count);
+    const n = addNode('input', null, INPUT_ZONE_X, y, { party: 'bob', bitIdx: idx });
+    bobNodes.push(n);
+  }
+  while (bobNodes.length > S.bob.count) {
+    const rem = bobNodes.pop();
+    removeNode(rem.id);
+  }
+
+  // Sync outputs
+  const outNodes = getOutputNodes();
+  while (outNodes.length < S.outputCount) {
+    const idx = outNodes.length;
+    const y = computeOutputY(idx, S.outputCount);
+    const n = addNode('output', null, OUTPUT_ZONE_X, y, { bitIdx: idx });
+    outNodes.push(n);
+  }
+  while (outNodes.length > S.outputCount) {
+    const rem = outNodes.pop();
+    removeNode(rem.id);
+  }
+
+  // Reposition
+  repositionIONodes();
+}
+
+function computeInputY(party, idx, count) {
+  const H = canvas.height;
+  const aliceCount = S.alice.count;
+  const bobCount = S.bob.count;
+  const totalInputs = aliceCount + bobCount;
+  const spacing = Math.min(50, (H - 80) / (totalInputs + 1));
+  const startY = (H - (totalInputs - 1) * spacing) / 2;
+  const globalIdx = party === 'alice' ? idx : aliceCount + idx;
+  return startY + globalIdx * spacing;
+}
+
+function computeOutputY(idx, count) {
+  const H = canvas.height;
+  const spacing = Math.min(50, (H - 80) / (count + 1));
+  const startY = (H - (count - 1) * spacing) / 2;
+  return startY + idx * spacing;
+}
+
+function repositionIONodes() {
+  const aliceNodes = getInputNodes('alice');
+  aliceNodes.forEach((n, i) => {
+    n.x = INPUT_ZONE_X;
+    n.y = computeInputY('alice', i, S.alice.count);
+  });
+  const bobNodes = getInputNodes('bob');
+  bobNodes.forEach((n, i) => {
+    n.x = INPUT_ZONE_X;
+    n.y = computeInputY('bob', i, S.bob.count);
+  });
+  const outNodes = getOutputNodes();
+  outNodes.forEach((n, i) => {
+    n.x = OUTPUT_ZONE_X;
+    n.y = computeOutputY(i, S.outputCount);
+  });
+}
+
+/* ── GARBLING ENGINE ──────────────────────────────────── */
+function generateWireLabels() {
+  S.wireLabels = {};
+  // Every node that can be a source gets labels
+  S.nodes.forEach(n => {
+    if (n.type === 'output') return;
+    S.wireLabels[n.id] = { l0: randHex(16), l1: randHex(16) };
+  });
+}
+
+function garbleGate(gid) {
+  const g = getNode(gid);
+  if (!g || g.type !== 'gate') return [];
+  const numIn = GATE_INPUTS[g.gateType];
+  const inConns = getInputConns(gid);
+  const outLabels = S.wireLabels[gid];
+  if (!outLabels) return [];
+
+  const table = [];
+  if (numIn === 1) {
+    const c0 = inConns.find(c => c.toPort === 0);
+    const srcLabels = c0 ? S.wireLabels[c0.from] : null;
+    for (let a = 0; a <= 1; a++) {
+      const result = GATE_EVAL[g.gateType](a);
+      const inLabel = srcLabels ? (a === 0 ? srcLabels.l0 : srcLabels.l1) : randHex(16);
+      const outLabel = result === 0 ? outLabels.l0 : outLabels.l1;
+      table.push({
+        inputBits: `${a}`,
+        inLabels: [inLabel],
+        enc: randHex(16),
+        outLabel,
+        outBit: result,
+        decrypted: false,
+      });
+    }
+  } else {
+    const c0 = inConns.find(c => c.toPort === 0);
+    const c1 = inConns.find(c => c.toPort === 1);
+    const srcA = c0 ? S.wireLabels[c0.from] : null;
+    const srcB = c1 ? S.wireLabels[c1.from] : null;
+    for (let a = 0; a <= 1; a++) {
+      for (let b = 0; b <= 1; b++) {
+        const result = GATE_EVAL[g.gateType](a, b);
+        const lA = srcA ? (a === 0 ? srcA.l0 : srcA.l1) : randHex(16);
+        const lB = srcB ? (b === 0 ? srcB.l0 : srcB.l1) : randHex(16);
+        const outLabel = result === 0 ? outLabels.l0 : outLabels.l1;
+        table.push({
+          inputBits: `${a}${b}`,
+          inLabels: [lA, lB],
+          enc: randHex(16),
+          outLabel,
+          outBit: result,
+          decrypted: false,
+        });
+      }
+    }
+  }
+
+  // Shuffle
+  for (let i = table.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [table[i], table[j]] = [table[j], table[i]];
+  }
+
+  return table;
+}
+
+function garbleAll() {
+  S.garbledTables = {};
+  const order = topSort();
+  order.forEach(gid => {
+    S.garbledTables[gid] = garbleGate(gid);
+  });
+}
+
+/* ── GARBLED EVALUATION ───────────────────────────────── */
+function garbledEvaluate() {
+  S.evalLabels = {};
+  S.evalResults = {};
+
+  // Input nodes get labels based on actual values
+  getInputNodes('alice').forEach((n,i) => {
+    const v = S.alice.values[i] || 0;
+    const labels = S.wireLabels[n.id];
+    if (labels) S.evalLabels[n.id] = v === 0 ? labels.l0 : labels.l1;
+    S.evalResults[n.id] = v;
+  });
+  getInputNodes('bob').forEach((n,i) => {
+    const v = S.bob.values[i] || 0;
+    const labels = S.wireLabels[n.id];
+    if (labels) S.evalLabels[n.id] = v === 0 ? labels.l0 : labels.l1;
+    S.evalResults[n.id] = v;
+  });
+
+  const order = topSort();
+  S.evalOrder = order;
+
+  order.forEach(gid => {
+    const g = getNode(gid);
+    if (!g) return;
+    const inConns = getInputConns(gid);
+    const table = S.garbledTables[gid] || [];
+    const numIn = GATE_INPUTS[g.gateType];
+
+    // Find matching row
+    if (numIn === 1) {
+      const c0 = inConns.find(c => c.toPort === 0);
+      const inVal = c0 ? (S.evalResults[c0.from] ?? 0) : 0;
+      const row = table.find(r => r.inputBits === `${inVal}`);
+      if (row) {
+        row.decrypted = true;
+        S.evalLabels[gid] = row.outLabel;
+        S.evalResults[gid] = row.outBit;
+      }
+    } else {
+      const c0 = inConns.find(c => c.toPort === 0);
+      const c1 = inConns.find(c => c.toPort === 1);
+      const a = c0 ? (S.evalResults[c0.from] ?? 0) : 0;
+      const b = c1 ? (S.evalResults[c1.from] ?? 0) : 0;
+      const row = table.find(r => r.inputBits === `${a}${b}`);
+      if (row) {
+        row.decrypted = true;
+        S.evalLabels[gid] = row.outLabel;
+        S.evalResults[gid] = row.outBit;
+      }
+    }
+  });
+
+  // Propagate to outputs
+  getOutputNodes().forEach(on => {
+    const c = getInputConns(on.id)[0];
+    if (c) {
+      S.evalResults[on.id] = S.evalResults[c.from] ?? 0;
+      S.evalLabels[on.id] = S.evalLabels[c.from] || '';
+    }
+  });
+}
+
+/* ══════════════════════════════════════════════════════
+   CANVAS RENDERING
+══════════════════════════════════════════════════════ */
+function render() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  drawGrid(W, H);
+  drawZoneLabels(W, H);
+  drawWires();
+  drawTempWire();
+  drawInputNodes();
+  drawOutputNodes();
+  drawGates();
+  drawPlacingGhost();
+}
+
+function drawGrid(W, H) {
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 30) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 30) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  // Zone dividers
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(130, 0); ctx.lineTo(130, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(750, 0); ctx.lineTo(750, H); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawZoneLabels(W, H) {
+  ctx.save();
+  ctx.font = '9px "Space Mono"';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillText('INPUTS', 70, 20);
+  ctx.fillText('CIRCUIT', W/2, 20);
+  ctx.fillText('OUTPUTS', 790, 20);
+  ctx.restore();
+}
+
+function drawInputNodes() {
+  const aliceNodes = getInputNodes('alice');
+  const bobNodes = getInputNodes('bob');
+
+  aliceNodes.forEach((n, i) => {
+    const color = COLORS.alice;
+    const v = S.evalResults[n.id] !== undefined ? S.evalResults[n.id] : (S.alice.values[i] ?? 0);
+    drawIONode(n, `a${i}`, color, v, S.step >= 2 && S.wireLabels[n.id]);
+  });
+
+  bobNodes.forEach((n, i) => {
+    const color = COLORS.bob;
+    const v = S.evalResults[n.id] !== undefined ? S.evalResults[n.id] : (S.bob.values[i] ?? 0);
+    drawIONode(n, `b${i}`, color, v, S.step >= 2 && S.wireLabels[n.id]);
+  });
+}
+
+function drawIONode(n, label, color, value, showLabels) {
+  const r = INPUT_NODE_R;
+  ctx.save();
+
+  // Glow
+  if (S.step >= 2) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+  }
+
+  ctx.beginPath();
+  ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+  ctx.fillStyle = color + '15';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Label
+  ctx.fillStyle = color;
+  ctx.font = 'bold 10px "Space Mono"';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, n.x - 20, n.y + 4);
+
+  // Value
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px "Space Mono"';
+  ctx.fillText(value, n.x, n.y + 4);
+
+  // Output port
+  const pp = getPortPos(n.id, 'out', 0);
+  const connected = getOutputConns(n.id).length > 0;
+  ctx.beginPath();
+  ctx.arc(pp.x, pp.y, PORT_R, 0, Math.PI*2);
+  ctx.fillStyle = connected ? color + '44' : COLORS.portEmpty;
+  ctx.fill();
+  ctx.strokeStyle = connected ? color : 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawOutputNodes() {
+  const outNodes = getOutputNodes();
+  outNodes.forEach((n, i) => {
+    const color = COLORS.output;
+    const v = S.evalResults[n.id];
+    const r = OUTPUT_NODE_R;
+    ctx.save();
+
+    if (S.step >= 6 && v !== undefined) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 15;
+    }
+
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+    ctx.fillStyle = color + '15';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Label
+    ctx.fillStyle = color;
+    ctx.font = 'bold 10px "Space Mono"';
+    ctx.textAlign = 'center';
+    ctx.fillText(`o${i}`, n.x + 22, n.y + 4);
+
+    // Value
+    if (S.step >= 6 && v !== undefined) {
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px "Space Mono"';
+      ctx.fillText(v, n.x, n.y + 4);
+    }
+
+    // Input port
+    const pp = getPortPos(n.id, 'in', 0);
+    const connected = getInputConns(n.id).length > 0;
+    ctx.beginPath();
+    ctx.arc(pp.x, pp.y, PORT_R, 0, Math.PI*2);
+    ctx.fillStyle = connected ? color + '44' : COLORS.portEmpty;
+    ctx.fill();
+    ctx.strokeStyle = connected ? color : 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.restore();
+  });
+}
+
+function drawGates() {
+  getGates().forEach(g => {
+    const isEval = S.step >= 5 && S.evalResults[g.id] !== undefined;
+    drawGateSymbol(g, isEval);
+  });
+}
+
+function drawGateSymbol(g, isEval) {
+  const { x, y, gateType } = g;
+  const w = GATE_W, h = GATE_H;
+  const numIn = GATE_INPUTS[gateType];
+  const hasNeg = ['NAND','NOR','XNOR','NOT'].includes(gateType);
+  const baseType = gateType.replace('N','').replace('X','');
+
+  const color = isEval ? '#ffcc6e' : COLORS.gate;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color + '10';
+  ctx.lineWidth = 1.5;
+
+  if (isEval) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+  }
+
+  // Draw gate body
+  if (gateType === 'AND' || gateType === 'NAND') {
+    ctx.beginPath();
+    ctx.moveTo(x, y - h/2);
+    ctx.lineTo(x + w*0.45, y - h/2);
+    ctx.arc(x + w*0.45, y, h/2, -Math.PI/2, Math.PI/2);
+    ctx.lineTo(x, y + h/2);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  } else if (gateType === 'OR' || gateType === 'NOR') {
+    ctx.beginPath();
+    ctx.moveTo(x, y - h/2);
+    ctx.quadraticCurveTo(x + w*0.55, y - h/2, x + w*0.85, y);
+    ctx.quadraticCurveTo(x + w*0.55, y + h/2, x, y + h/2);
+    ctx.quadraticCurveTo(x + w*0.18, y, x, y - h/2);
+    ctx.fill(); ctx.stroke();
+  } else if (gateType === 'XOR' || gateType === 'XNOR') {
+    ctx.beginPath();
+    ctx.moveTo(x + 5, y - h/2);
+    ctx.quadraticCurveTo(x + w*0.55, y - h/2, x + w*0.85, y);
+    ctx.quadraticCurveTo(x + w*0.55, y + h/2, x + 5, y + h/2);
+    ctx.quadraticCurveTo(x + w*0.22, y, x + 5, y - h/2);
+    ctx.fill(); ctx.stroke();
+    // Extra curve
+    ctx.beginPath();
+    ctx.moveTo(x - 2, y - h/2);
+    ctx.quadraticCurveTo(x + w*0.15, y, x - 2, y + h/2);
+    ctx.stroke();
+  } else if (gateType === 'NOT') {
+    ctx.beginPath();
+    ctx.moveTo(x, y - h/2);
+    ctx.lineTo(x + w*0.7, y);
+    ctx.lineTo(x, y + h/2);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+
+  ctx.shadowBlur = 0;
+
+  // Negation bubble
+  if (hasNeg) {
+    const bx = gateType === 'NOT' ? x + w*0.7 + BUBBLE_R + 1 : x + w*0.85 + BUBBLE_R + 1;
+    ctx.beginPath();
+    ctx.arc(bx, y, BUBBLE_R, 0, Math.PI*2);
+    ctx.fillStyle = COLORS.bg;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  }
+
+  // Gate label
+  ctx.fillStyle = color;
+  ctx.font = '8px "Space Mono"';
+  ctx.textAlign = 'center';
+  ctx.fillText(gateType, x + w/2, y + h/2 + 14);
+
+  // Input ports
+  for (let p = 0; p < numIn; p++) {
+    const pp = getPortPos(g.id, 'in', p);
+    const connected = getInputConns(g.id).some(c => c.toPort === p);
+    ctx.beginPath();
+    ctx.arc(pp.x, pp.y, PORT_R, 0, Math.PI*2);
+    ctx.fillStyle = connected ? COLORS.portFill + '44' : COLORS.portEmpty;
+    ctx.fill();
+    ctx.strokeStyle = connected ? COLORS.portFill : 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Wire stub
+    ctx.beginPath();
+    ctx.moveTo(pp.x - 12, pp.y);
+    ctx.lineTo(pp.x, pp.y);
+    ctx.strokeStyle = COLORS.wire;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Output port
+  const op = getPortPos(g.id, 'out', 0);
+  const outConnected = getOutputConns(g.id).length > 0;
+  ctx.beginPath();
+  ctx.arc(op.x, op.y, PORT_R, 0, Math.PI*2);
+  ctx.fillStyle = outConnected ? color + '44' : COLORS.portEmpty;
+  ctx.fill();
+  ctx.strokeStyle = outConnected ? color : 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Wire stub
+  ctx.beginPath();
+  ctx.moveTo(op.x, op.y);
+  ctx.lineTo(op.x + 12, op.y);
+  ctx.strokeStyle = COLORS.wire;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Show value during evaluation
+  if (isEval) {
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px "Space Mono"';
+    ctx.textAlign = 'center';
+    ctx.fillText(S.evalResults[g.id], op.x + 18, op.y + 4);
+  }
+
+  ctx.restore();
+}
+
+function drawWires() {
+  S.conns.forEach(c => {
+    const fromNode = getNode(c.from);
+    const toNode = getNode(c.to);
+    if (!fromNode || !toNode) return;
+
+    const fromPos = getPortPos(c.from, 'out', 0);
+    const toPos = toNode.type === 'output'
+      ? getPortPos(c.to, 'in', 0)
+      : getPortPos(c.to, 'in', c.toPort);
+
+    const isActive = S.step >= 5 && S.evalLabels[c.from];
+    const color = isActive ? COLORS.wireActive : COLORS.wire;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isActive ? 2 : 1.2;
+    if (isActive) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6;
+    }
+
+    // Bezier curve
+    const dx = Math.abs(toPos.x - fromPos.x) * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(fromPos.x, fromPos.y);
+    ctx.bezierCurveTo(
+      fromPos.x + dx, fromPos.y,
+      toPos.x - dx, toPos.y,
+      toPos.x, toPos.y
+    );
+    ctx.stroke();
+
+    ctx.restore();
+  });
+}
+
+function drawTempWire() {
+  if (S.mode !== 'wiring' || !S.wiringFrom) return;
+  const fromPos = getPortPos(S.wiringFrom, 'out', 0);
+  ctx.save();
+  ctx.strokeStyle = COLORS.portFill;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 5]);
+  const dx = Math.abs(S.mouseX - fromPos.x) * 0.4;
+  ctx.beginPath();
+  ctx.moveTo(fromPos.x, fromPos.y);
+  ctx.bezierCurveTo(
+    fromPos.x + dx, fromPos.y,
+    S.mouseX - dx, S.mouseY,
+    S.mouseX, S.mouseY
+  );
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawPlacingGhost() {
+  if (S.mode !== 'placing' || !S.placingGate) return;
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  const ghost = { id: -1, type: 'gate', gateType: S.placingGate, x: S.mouseX - GATE_W/2, y: S.mouseY };
+  drawGateSymbol(ghost, false);
+  ctx.restore();
+}
+
+/* ══════════════════════════════════════════════════════
+   HIT TESTING
+══════════════════════════════════════════════════════ */
+function hitTest(mx, my) {
+  // Check ports first (highest priority)
+  for (const n of S.nodes) {
+    if (n.type === 'input') {
+      const pp = getPortPos(n.id, 'out', 0);
+      if (Math.hypot(pp.x - mx, pp.y - my) < PORT_R + 4) {
+        return { type: 'port', nodeId: n.id, portType: 'out', portIdx: 0 };
+      }
+    }
+    if (n.type === 'output') {
+      const pp = getPortPos(n.id, 'in', 0);
+      if (Math.hypot(pp.x - mx, pp.y - my) < PORT_R + 4) {
+        return { type: 'port', nodeId: n.id, portType: 'in', portIdx: 0 };
+      }
+    }
+    if (n.type === 'gate') {
+      const numIn = GATE_INPUTS[n.gateType];
+      for (let p = 0; p < numIn; p++) {
+        const pp = getPortPos(n.id, 'in', p);
+        if (Math.hypot(pp.x - mx, pp.y - my) < PORT_R + 4) {
+          return { type: 'port', nodeId: n.id, portType: 'in', portIdx: p };
+        }
+      }
+      const op = getPortPos(n.id, 'out', 0);
+      if (Math.hypot(op.x - mx, op.y - my) < PORT_R + 4) {
+        return { type: 'port', nodeId: n.id, portType: 'out', portIdx: 0 };
+      }
+    }
+  }
+
+  // Check gate bodies
+  for (const n of S.nodes) {
+    if (n.type === 'gate') {
+      if (mx >= n.x - 5 && mx <= n.x + GATE_W + 5 && my >= n.y - GATE_H/2 - 5 && my <= n.y + GATE_H/2 + 5) {
+        return { type: 'gate', nodeId: n.id };
+      }
+    }
+  }
+
+  // Check wires (approximate)
+  for (const c of S.conns) {
+    const fp = getPortPos(c.from, 'out', 0);
+    const tn = getNode(c.to);
+    if (!tn) continue;
+    const tp = tn.type === 'output'
+      ? getPortPos(c.to, 'in', 0)
+      : getPortPos(c.to, 'in', c.toPort);
+    // Simple distance check along midpoint
+    const midX = (fp.x + tp.x) / 2;
+    const midY = (fp.y + tp.y) / 2;
+    if (Math.hypot(midX - mx, midY - my) < 15) {
+      return { type: 'wire', connId: c.id };
+    }
+  }
+
+  return { type: 'none' };
+}
+
+/* ══════════════════════════════════════════════════════
+   MOUSE EVENTS
+══════════════════════════════════════════════════════ */
+function getCanvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (canvas.width / rect.width),
+    y: (e.clientY - rect.top) * (canvas.height / rect.height)
   };
 }
-gcGenWires();
 
-function updateSliderDisplays() {
-  gcAlice = +document.getElementById('alice-val').value;
-  gcBob   = +document.getElementById('bob-val').value;
-  document.getElementById('alice-num').textContent = gcAlice;
-  document.getElementById('bob-num').textContent   = gcBob;
-}
+canvas.addEventListener('mousedown', e => {
+  if (S.step > 0) return; // Lock during protocol
+  const { x, y } = getCanvasCoords(e);
+  S.mouseX = x; S.mouseY = y;
 
-document.getElementById('alice-val').addEventListener('input', () => { updateSliderDisplays(); gcStep = 0; gcReset(); });
-document.getElementById('bob-val').addEventListener('input',   () => { updateSliderDisplays(); gcStep = 0; gcReset(); });
-
-function gcReset() {
-  gcGenWires();
-  gcStep = 0;
-  document.getElementById('gc-step-counter').textContent = `Step 0 / ${gcMaxSteps}`;
-  document.getElementById('t0-val').textContent = '—';
-  document.getElementById('t1-val').textContent = '—';
-  document.getElementById('s0-val').textContent = '—';
-  document.getElementById('s1-val').textContent = '—';
-  ['00','01','10','11'].forEach(r => {
-    document.getElementById('et-'+r).textContent = '—';
-    document.getElementById('es-'+r).textContent = 'locked';
-  });
-  document.getElementById('ot-status').textContent = 'Waiting…';
-  document.getElementById('grb-inner').textContent = 'Compute to reveal result…';
-  document.getElementById('gc-result-bar').className = 'gc-result-bar';
-  gcDrawGate('idle');
-}
-
-const gcStepData = [
-  () => {
-    // Step 1: Alice generates wire labels
-    document.getElementById('t0-val').textContent = gcWires.t0;
-    document.getElementById('t1-val').textContent = gcWires.t1;
-    gcDrawGate('alice');
-    setGcTableRow('', '');
-  },
-  () => {
-    // Step 2: Alice garbles the gate
-    const rows = [
-      { row:'00', enc: 'Enc(r₀, t₀‖s₀) = ' + randHex(12) },
-      { row:'01', enc: 'Enc(r₀, t₀‖s₁) = ' + randHex(12) },
-      { row:'10', enc: 'Enc(r₀, t₁‖s₀) = ' + randHex(12) },
-      { row:'11', enc: 'Enc(r₁, t₁‖s₁) = ' + randHex(12) },
-    ];
-    rows.forEach(({row,enc}) => {
-      document.getElementById('et-'+row).textContent = enc;
-    });
-    gcDrawGate('garbled');
-  },
-  () => {
-    // Step 3: Table is shuffled
-    const rowOrder = ['10','00','11','01'];
-    rowOrder.forEach((r,i) => {
-      document.getElementById('es-'+r).textContent = 'shuffled';
-    });
-    gcDrawGate('shuffle');
-  },
-  () => {
-    // Step 4: Oblivious Transfer
-    document.getElementById('s0-val').textContent = gcWires.s0;
-    document.getElementById('s1-val').textContent = gcWires.s1;
-    const bobBit = gcAlice > gcBob ? 1 : 0;
-    document.getElementById('ot-status').textContent = `OT: Bob fetches s${bobBit} = ${gcWires['s'+bobBit]} (Alice doesn't know which)`;
-    gcDrawGate('ot');
-  },
-  () => {
-    // Step 5: Evaluate
-    const aliceRicher = gcAlice > gcBob;
-    const resultRow = aliceRicher ? '11' : '10';
-    document.getElementById('es-'+resultRow).textContent = 'DECRYPTED ✓';
-    document.getElementById('es-'+resultRow).classList.add('unlocked');
-
-    const bar = document.getElementById('gc-result-bar');
-    const inner = document.getElementById('grb-inner');
-    if (aliceRicher) {
-      bar.className = 'gc-result-bar show-alice';
-      inner.textContent = `✓ Output: r₁ — Alice IS richer (${gcAlice} > ${gcBob}). Neither party revealed their exact wealth.`;
-    } else {
-      bar.className = 'gc-result-bar show-bob';
-      inner.textContent = `✓ Output: r₀ — Bob IS richer or equal (${gcBob} ≥ ${gcAlice}). Neither party revealed their exact wealth.`;
-    }
-    gcDrawGate('result', aliceRicher);
+  if (S.mode === 'deleting') {
+    const hit = hitTest(x, y);
+    if (hit.type === 'gate') { removeNode(hit.nodeId); updateAll(); }
+    else if (hit.type === 'wire') { removeConn(hit.connId); updateAll(); }
+    return;
   }
-];
 
-function setGcTableRow(row, status) {}
+  if (S.mode === 'placing') {
+    // Place gate at click position
+    if (x > 130 && x < 750) {
+      addNode('gate', S.placingGate, x - GATE_W/2, y);
+      updateAll();
+    }
+    return;
+  }
 
-document.getElementById('gc-step').addEventListener('click', () => {
-  if (gcStep >= gcMaxSteps) { gcReset(); return; }
-  gcStepData[gcStep]();
-  gcStep++;
-  document.getElementById('gc-step-counter').textContent = `Step ${gcStep} / ${gcMaxSteps}`;
-  if (gcStep >= gcMaxSteps) {
-    document.getElementById('gc-step').textContent = '↺ Reset';
+  const hit = hitTest(x, y);
+
+  if (hit.type === 'port' && hit.portType === 'out') {
+    // Start wiring from output port
+    S.mode = 'wiring';
+    S.wiringFrom = hit.nodeId;
+    canvas.className = 'wiring';
+    return;
+  }
+
+  if (hit.type === 'gate') {
+    // Start dragging
+    const n = getNode(hit.nodeId);
+    S.mode = 'dragging';
+    S.dragNode = hit.nodeId;
+    S.dragOff = { x: x - n.x, y: y - n.y };
+    canvas.className = 'dragging';
+    return;
   }
 });
 
-function gcDrawGate(phase, aliceRicher) {
-  const W = gcCanvas.width, H = gcCanvas.height;
-  gcCtx.clearRect(0, 0, W, H);
+canvas.addEventListener('mousemove', e => {
+  const { x, y } = getCanvasCoords(e);
+  S.mouseX = x; S.mouseY = y;
 
-  const cx = W / 2, cy = H / 2 - 20;
-  const colors = {
-    idle:    ['#333','#555'],
-    alice:   ['#1a3a2a','#7fff6e'],
-    garbled: ['#1a2a3a','#6ec8ff'],
-    shuffle: ['#2a1a3a','#c86eff'],
-    ot:      ['#2a2a1a','#ffcc6e'],
-    result:  aliceRicher ? ['#1a3a2a','#7fff6e'] : ['#3a1a1a','#ff6e6e'],
-  };
-  const [bg, stroke] = colors[phase] || colors.idle;
-
-  // Draw AND gate shape
-  gcCtx.save();
-  gcCtx.strokeStyle = stroke;
-  gcCtx.fillStyle = bg;
-  gcCtx.lineWidth = 1.5;
-  gcCtx.shadowColor = stroke;
-  gcCtx.shadowBlur = phase === 'idle' ? 0 : 12;
-
-  // Gate body
-  gcCtx.beginPath();
-  gcCtx.moveTo(cx - 45, cy - 35);
-  gcCtx.lineTo(cx + 5, cy - 35);
-  gcCtx.arc(cx + 5, cy, 35, -Math.PI/2, Math.PI/2);
-  gcCtx.lineTo(cx - 45, cy + 35);
-  gcCtx.closePath();
-  gcCtx.fill();
-  gcCtx.stroke();
-
-  // Input lines
-  gcCtx.beginPath();
-  gcCtx.moveTo(cx - 80, cy - 18); gcCtx.lineTo(cx - 45, cy - 18);
-  gcCtx.moveTo(cx - 80, cy + 18); gcCtx.lineTo(cx - 45, cy + 18);
-  gcCtx.stroke();
-
-  // Output line
-  gcCtx.beginPath();
-  gcCtx.moveTo(cx + 40, cy); gcCtx.lineTo(cx + 80, cy);
-  gcCtx.stroke();
-
-  // Labels
-  gcCtx.fillStyle = stroke;
-  gcCtx.font = '11px "Space Mono"';
-  gcCtx.textAlign = 'center';
-  gcCtx.shadowBlur = 0;
-
-  gcCtx.fillText('t', cx - 90, cy - 15);
-  gcCtx.fillText('s', cx - 90, cy + 22);
-  gcCtx.fillText('r', cx + 93, cy + 4);
-  gcCtx.fillText('AND', cx - 15, cy + 4);
-
-  // Phase specific labels
-  if (phase === 'alice') {
-    gcCtx.fillStyle = '#7fff6e';
-    gcCtx.font = '9px "Space Mono"';
-    gcCtx.fillText('t₀/t₁ generated', cx - 15, cy + H/2 - 30);
-  }
-  if (phase === 'result') {
-    gcCtx.fillStyle = stroke;
-    gcCtx.font = 'bold 13px "Space Mono"';
-    gcCtx.fillText(aliceRicher ? 'r = 1' : 'r = 0', cx + 55, cy - 10);
+  if (S.mode === 'dragging' && S.dragNode) {
+    const n = getNode(S.dragNode);
+    if (n) {
+      n.x = Math.max(135, Math.min(745 - GATE_W, x - S.dragOff.x));
+      n.y = Math.max(GATE_H/2 + 10, Math.min(canvas.height - GATE_H/2 - 10, y - S.dragOff.y));
+    }
+    render();
+    return;
   }
 
-  // Bit circles on wires
-  if (phase !== 'idle') {
-    const drawBit = (x, y, val, color) => {
-      gcCtx.beginPath();
-      gcCtx.arc(x, y, 7, 0, Math.PI*2);
-      gcCtx.fillStyle = color + '22';
-      gcCtx.fill();
-      gcCtx.strokeStyle = color;
-      gcCtx.lineWidth = 1;
-      gcCtx.stroke();
-      gcCtx.fillStyle = color;
-      gcCtx.font = '9px "Space Mono"';
-      gcCtx.fillText(val, x, y+3);
-    };
+  if (S.mode === 'wiring' || S.mode === 'placing') {
+    render();
+    return;
+  }
+});
 
-    const aliceBit = gcAlice > gcBob ? '1' : '0';
-    const bobBit   = gcAlice > gcBob ? '1' : '0';
+canvas.addEventListener('mouseup', e => {
+  const { x, y } = getCanvasCoords(e);
 
-    if (phase === 'ot' || phase === 'result') {
-      drawBit(cx - 63, cy - 18, aliceBit, '#6ec8ff');
-      drawBit(cx - 63, cy + 18, bobBit,   '#c86eff');
+  if (S.mode === 'wiring' && S.wiringFrom) {
+    const hit = hitTest(x, y);
+    if (hit.type === 'port' && hit.portType === 'in' && hit.nodeId !== S.wiringFrom) {
+      // Prevent self-connections and cycles (simple check)
+      addConn(S.wiringFrom, hit.nodeId, hit.portIdx);
+      updateAll();
+    }
+    S.mode = 'idle';
+    S.wiringFrom = null;
+    canvas.className = '';
+    render();
+    return;
+  }
+
+  if (S.mode === 'dragging') {
+    S.mode = 'idle';
+    S.dragNode = null;
+    canvas.className = '';
+    updateAll();
+    return;
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (S.mode === 'wiring') {
+    S.mode = 'idle';
+    S.wiringFrom = null;
+    canvas.className = '';
+    render();
+  }
+  if (S.mode === 'dragging') {
+    S.mode = 'idle';
+    S.dragNode = null;
+    canvas.className = '';
+    render();
+  }
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (S.step > 0) return;
+  const { x, y } = getCanvasCoords(e);
+  const hit = hitTest(x, y);
+  if (hit.type === 'gate') { removeNode(hit.nodeId); updateAll(); }
+  else if (hit.type === 'wire') { removeConn(hit.connId); updateAll(); }
+});
+
+/* ══════════════════════════════════════════════════════
+   UI UPDATES
+══════════════════════════════════════════════════════ */
+function updateAll() {
+  updateStats();
+  updateBitToggles();
+  render();
+}
+
+function updateStats() {
+  const gates = getGates();
+  const nConns = S.conns.length;
+  const depth = gates.length > 0 ? circuitDepth() : 0;
+  let cost = 0, encOps = 0;
+  gates.forEach(g => {
+    const numIn = GATE_INPUTS[g.gateType];
+    const rows = numIn === 1 ? 2 : 4;
+    cost += rows;
+    encOps += rows;
+  });
+  document.getElementById('gcb-stat-gates').textContent = gates.length;
+  document.getElementById('gcb-stat-wires').textContent = nConns;
+  document.getElementById('gcb-stat-depth').textContent = depth;
+  document.getElementById('gcb-stat-cost').textContent = cost + ' ct';
+  document.getElementById('gcb-stat-enc').textContent = encOps;
+}
+
+function updateBitToggles() {
+  // Alice bits
+  const aliceEl = document.getElementById('gcb-alice-bits');
+  aliceEl.innerHTML = '';
+  for (let i = 0; i < S.alice.count; i++) {
+    const btn = document.createElement('button');
+    btn.className = 'gcb-bit-toggle' + (S.alice.values[i] ? ' on' : '');
+    btn.textContent = S.alice.values[i] || 0;
+    btn.dataset.label = `a${i}`;
+    btn.addEventListener('click', () => {
+      S.alice.values[i] = S.alice.values[i] ? 0 : 1;
+      updateBitToggles();
+      render();
+    });
+    aliceEl.appendChild(btn);
+  }
+  document.getElementById('gcb-alice-count').textContent = S.alice.count;
+
+  // Bob bits
+  const bobEl = document.getElementById('gcb-bob-bits');
+  bobEl.innerHTML = '';
+  for (let i = 0; i < S.bob.count; i++) {
+    const btn = document.createElement('button');
+    btn.className = 'gcb-bit-toggle' + (S.bob.values[i] ? ' bob-on' : '');
+    btn.textContent = S.bob.values[i] || 0;
+    btn.dataset.label = `b${i}`;
+    btn.addEventListener('click', () => {
+      S.bob.values[i] = S.bob.values[i] ? 0 : 1;
+      updateBitToggles();
+      render();
+    });
+    bobEl.appendChild(btn);
+  }
+  document.getElementById('gcb-bob-count').textContent = S.bob.count;
+  document.getElementById('gcb-output-count').textContent = S.outputCount;
+}
+
+function updateInspector() {
+  const tables = document.getElementById('gcb-inspector-tables');
+  const hint = document.getElementById('gcb-inspector-hint');
+  tables.innerHTML = '';
+
+  if (S.step < 3) {
+    hint.textContent = 'Tables appear after garbling (Step 3)';
+    return;
+  }
+  hint.textContent = `${Object.keys(S.garbledTables).length} garbled table(s)`;
+
+  const order = topSort();
+  order.forEach(gid => {
+    const g = getNode(gid);
+    if (!g) return;
+    const gTable = S.garbledTables[gid] || [];
+
+    const card = document.createElement('div');
+    card.className = 'gcb-gate-card' + (S.step >= 5 && S.evalResults[gid] !== undefined ? ' evaluating' : '');
+    card.innerHTML = `
+      <div class="gcb-gate-card-header">
+        <span class="gcb-gate-card-name">Gate #${gid}</span>
+        <span class="gcb-gate-card-type">${g.gateType}</span>
+      </div>
+      <table class="gcb-gate-table">
+        <thead><tr><th>Input</th><th>Encrypted</th><th>Output</th><th>Status</th></tr></thead>
+        <tbody>
+          ${gTable.map(row => `
+            <tr class="${row.decrypted ? 'decrypted' : ''}">
+              <td>${row.inputBits}</td>
+              <td class="enc-cell">${row.enc}</td>
+              <td>${row.decrypted ? row.outBit : '?'}</td>
+              <td>${row.decrypted ? '✓ DECRYPTED' : '🔒 locked'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    tables.appendChild(card);
+  });
+}
+
+function updateWirePanel() {
+  const grid = document.getElementById('gcb-wire-grid');
+  const hint = document.getElementById('gcb-wire-hint');
+  grid.innerHTML = '';
+
+  if (S.step < 2) {
+    hint.textContent = 'Labels appear after generation (Step 2)';
+    return;
+  }
+  hint.textContent = `${Object.keys(S.wireLabels).length} wire label pair(s)`;
+
+  S.nodes.forEach(n => {
+    if (n.type === 'output') return;
+    const labels = S.wireLabels[n.id];
+    if (!labels) return;
+
+    let name = '';
+    if (n.type === 'input') name = `${n.party === 'alice' ? 'a' : 'b'}${n.bitIdx} (Input)`;
+    else if (n.type === 'gate') name = `Gate #${n.id} (${n.gateType})`;
+
+    const activeLabel = S.evalLabels[n.id];
+    const item = document.createElement('div');
+    item.className = 'gcb-wire-item';
+    item.innerHTML = `
+      <div class="gcb-wire-name">${name}</div>
+      <div class="gcb-wire-label-row">
+        <span class="gcb-wire-label-bit">0:</span>
+        <span class="gcb-wire-label-hex${activeLabel === labels.l0 ? ' active-label' : ''}">${labels.l0}</span>
+      </div>
+      <div class="gcb-wire-label-row">
+        <span class="gcb-wire-label-bit">1:</span>
+        <span class="gcb-wire-label-hex${activeLabel === labels.l1 ? ' active-label' : ''}">${labels.l1}</span>
+      </div>
+    `;
+    grid.appendChild(item);
+  });
+}
+
+function updateStepUI() {
+  document.getElementById('gcb-step-num').textContent = S.step;
+  const stepBtn = document.getElementById('gcb-proto-step');
+
+  const steps = [
+    { name: 'Ready', desc: 'Configure your circuit and inputs, then begin the Yao protocol.', btn: '▶ Step →' },
+    { name: '① Circuit Definition', desc: 'The Boolean circuit is agreed upon by both parties. Alice and Bob know the circuit structure but not each other\'s inputs.', btn: 'Step →' },
+    { name: '② Wire Label Generation', desc: 'Alice (garbler) generates two random 128-bit labels for every wire: one for 0, one for 1. Labels look random — they reveal nothing about the underlying bit.', btn: 'Step →' },
+    { name: '③ Gate Garbling', desc: 'For each gate, Alice encrypts the output wire label under the two input wire labels. The truth table rows are shuffled randomly so Bob can\'t infer positions.', btn: 'Step →' },
+    { name: '④ Oblivious Transfer', desc: 'Alice sends her input labels directly (she knows her bits). For Bob\'s inputs, they run OT: Bob receives the label for his actual bit, Alice doesn\'t learn which one.', btn: 'Step →' },
+    { name: '⑤ Circuit Evaluation', desc: 'Bob evaluates gate by gate in topological order. For each gate, he uses his two input labels to decrypt exactly one row of the garbled table, obtaining the output label.', btn: 'Step →' },
+    { name: '⑥ Output Decoding', desc: 'Bob holds the output wire labels. Alice reveals the mapping (label→bit) for output wires only. The final Boolean result is decoded — neither party\'s inputs were revealed!', btn: '↺ Reset' },
+  ];
+
+  const s = steps[S.step] || steps[0];
+  document.getElementById('gcb-step-name').textContent = s.name;
+  document.getElementById('gcb-step-desc').textContent = s.desc;
+  stepBtn.textContent = s.btn;
+
+  // Result bar
+  if (S.step >= 6) {
+    const outNodes = getOutputNodes();
+    const bits = outNodes.map(n => S.evalResults[n.id] ?? '?').join('');
+    const bar = document.getElementById('gc-result-bar');
+    const inner = document.getElementById('grb-inner');
+    bar.className = 'gc-result-bar show-result';
+    inner.textContent = `✓ Computation complete! Output: ${bits} — Neither party revealed their private inputs.`;
+  } else {
+    document.getElementById('gc-result-bar').className = 'gc-result-bar';
+    document.getElementById('grb-inner').textContent = 'Build a circuit and run the protocol to see results…';
+  }
+}
+
+/* ══════════════════════════════════════════════════════
+   PROTOCOL SIMULATION
+══════════════════════════════════════════════════════ */
+function protocolStep() {
+  const gates = getGates();
+
+  if (S.step >= 6) {
+    protocolReset();
+    return;
+  }
+
+  if (S.step === 0 && gates.length === 0) return; // No circuit
+
+  S.step++;
+
+  switch (S.step) {
+    case 1: // Circuit definition
+      break;
+    case 2: // Wire label generation
+      generateWireLabels();
+      updateWirePanel();
+      break;
+    case 3: // Garbling
+      garbleAll();
+      updateInspector();
+      break;
+    case 4: // OT
+      break;
+    case 5: // Evaluation
+      garbledEvaluate();
+      updateInspector();
+      updateWirePanel();
+      break;
+    case 6: // Output decoding
+      break;
+  }
+
+  updateStepUI();
+  render();
+}
+
+function protocolReset() {
+  S.step = 0;
+  S.wireLabels = {};
+  S.garbledTables = {};
+  S.evalOrder = [];
+  S.evalLabels = {};
+  S.evalResults = {};
+  updateStepUI();
+  updateInspector();
+  updateWirePanel();
+  render();
+}
+
+/* ══════════════════════════════════════════════════════
+   PRESET CIRCUITS
+══════════════════════════════════════════════════════ */
+function clearCircuit() {
+  S.nodes = [];
+  S.conns = [];
+  S.nextId = 1;
+  protocolReset();
+}
+
+function loadPreset(name) {
+  clearCircuit();
+  const cy = canvas.height / 2;
+
+  switch (name) {
+    case 'and1': {
+      S.alice.count = 1; S.alice.values = [1];
+      S.bob.count = 1; S.bob.values = [0];
+      S.outputCount = 1;
+      syncIONodes();
+      const g = addNode('gate', 'AND', 350, cy);
+      const ai = getInputNodes('alice');
+      const bi = getInputNodes('bob');
+      const outs = getOutputNodes();
+      addConn(ai[0].id, g.id, 0);
+      addConn(bi[0].id, g.id, 1);
+      addConn(g.id, outs[0].id, 0);
+      break;
+    }
+    case 'adder': {
+      S.alice.count = 2; S.alice.values = [1, 1];
+      S.bob.count = 1; S.bob.values = [1];
+      S.outputCount = 2;
+      syncIONodes();
+      // Half adder: Sum = A XOR B, Carry = A AND B
+      // Then full adder with carry in from alice[1]
+      const xor1 = addNode('gate', 'XOR', 280, cy - 60);
+      const and1 = addNode('gate', 'AND', 280, cy + 60);
+      const xor2 = addNode('gate', 'XOR', 470, cy - 60);
+      const and2 = addNode('gate', 'AND', 470, cy + 20);
+      const or1  = addNode('gate', 'OR',  600, cy + 40);
+
+      const ai = getInputNodes('alice');
+      const bi = getInputNodes('bob');
+      const outs = getOutputNodes();
+
+      // First half: a0 XOR b0, a0 AND b0
+      addConn(ai[0].id, xor1.id, 0);
+      addConn(bi[0].id, xor1.id, 1);
+      addConn(ai[0].id, and1.id, 0);
+      addConn(bi[0].id, and1.id, 1);
+
+      // Second half: (a0 XOR b0) XOR a1
+      addConn(xor1.id, xor2.id, 0);
+      addConn(ai[1].id, xor2.id, 1);
+
+      // (a0 XOR b0) AND a1
+      addConn(xor1.id, and2.id, 0);
+      addConn(ai[1].id, and2.id, 1);
+
+      // Carry = (a0 AND b0) OR ((a0 XOR b0) AND a1)
+      addConn(and1.id, or1.id, 0);
+      addConn(and2.id, or1.id, 1);
+
+      // Outputs: Sum = xor2, Carry = or1
+      addConn(xor2.id, outs[0].id, 0);
+      addConn(or1.id, outs[1].id, 0);
+      break;
+    }
+    case 'compare': {
+      S.alice.count = 2; S.alice.values = [1, 0];
+      S.bob.count = 2; S.bob.values = [0, 1];
+      S.outputCount = 1;
+      syncIONodes();
+      // a > b using: (a1 AND NOT b1) OR (a1 XNOR b1) AND (a0 AND NOT b0)
+      // Simplified: XOR high bits, if a1>b1 → a wins; if equal, check low bits
+      const xnor1 = addNode('gate', 'XNOR', 270, cy - 80);
+      const not1  = addNode('gate', 'NOT',  270, cy - 20);
+      const and1  = addNode('gate', 'AND',  380, cy - 50);
+      const not2  = addNode('gate', 'NOT',  270, cy + 40);
+      const and2  = addNode('gate', 'AND',  380, cy + 30);
+      const and3  = addNode('gate', 'AND',  510, cy + 10);
+      const or1   = addNode('gate', 'OR',   620, cy - 20);
+
+      const ai = getInputNodes('alice');
+      const bi = getInputNodes('bob');
+      const outs = getOutputNodes();
+
+      // High bit comparison: a1 AND NOT b1
+      addConn(bi[1].id, not1.id, 0);
+      addConn(ai[1].id, and1.id, 0);
+      addConn(not1.id, and1.id, 1);
+
+      // High bits equal: a1 XNOR b1
+      addConn(ai[1].id, xnor1.id, 0);
+      addConn(bi[1].id, xnor1.id, 1);
+
+      // Low bit comparison: a0 AND NOT b0
+      addConn(bi[0].id, not2.id, 0);
+      addConn(ai[0].id, and2.id, 0);
+      addConn(not2.id, and2.id, 1);
+
+      // (high equal) AND (low a > b)
+      addConn(xnor1.id, and3.id, 0);
+      addConn(and2.id, and3.id, 1);
+
+      // Final: high_a_wins OR (equal AND low_a_wins)
+      addConn(and1.id, or1.id, 0);
+      addConn(and3.id, or1.id, 1);
+
+      addConn(or1.id, outs[0].id, 0);
+      break;
+    }
+    case 'majority': {
+      S.alice.count = 2; S.alice.values = [1, 1];
+      S.bob.count = 1; S.bob.values = [0];
+      S.outputCount = 1;
+      syncIONodes();
+      // Majority of 3 inputs: (a0 AND a1) OR (a0 AND b0) OR (a1 AND b0)
+      const and1 = addNode('gate', 'AND', 300, cy - 80);
+      const and2 = addNode('gate', 'AND', 300, cy);
+      const and3 = addNode('gate', 'AND', 300, cy + 80);
+      const or1  = addNode('gate', 'OR',  470, cy - 40);
+      const or2  = addNode('gate', 'OR',  600, cy);
+
+      const ai = getInputNodes('alice');
+      const bi = getInputNodes('bob');
+      const outs = getOutputNodes();
+
+      addConn(ai[0].id, and1.id, 0);
+      addConn(ai[1].id, and1.id, 1);
+      addConn(ai[0].id, and2.id, 0);
+      addConn(bi[0].id, and2.id, 1);
+      addConn(ai[1].id, and3.id, 0);
+      addConn(bi[0].id, and3.id, 1);
+
+      addConn(and1.id, or1.id, 0);
+      addConn(and2.id, or1.id, 1);
+      addConn(or1.id, or2.id, 0);
+      addConn(and3.id, or2.id, 1);
+
+      addConn(or2.id, outs[0].id, 0);
+      break;
+    }
+    case 'custom':
+    default: {
+      S.alice.count = 2; S.alice.values = [0, 1];
+      S.bob.count = 2; S.bob.values = [1, 0];
+      S.outputCount = 1;
+      syncIONodes();
+      break;
     }
   }
 
-  gcCtx.restore();
+  updateAll();
 }
-gcDrawGate('idle');
+
+/* ══════════════════════════════════════════════════════
+   EVENT HANDLERS — TOOLBAR
+══════════════════════════════════════════════════════ */
+
+// Gate palette
+document.querySelectorAll('.gcb-gate-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (S.step > 0) return;
+    const gate = btn.dataset.gate;
+    if (S.mode === 'placing' && S.placingGate === gate) {
+      // Deselect
+      S.mode = 'idle';
+      S.placingGate = null;
+      btn.classList.remove('active');
+      canvas.className = '';
+    } else {
+      S.mode = 'placing';
+      S.placingGate = gate;
+      document.querySelectorAll('.gcb-gate-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      canvas.className = 'placing';
+      // Turn off delete mode
+      document.getElementById('gcb-delete-mode').classList.remove('active');
+    }
+  });
+});
+
+// Presets
+document.querySelectorAll('.gcb-preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.gcb-preset-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadPreset(btn.dataset.preset);
+  });
+});
+
+// Delete mode
+document.getElementById('gcb-delete-mode').addEventListener('click', () => {
+  if (S.step > 0) return;
+  const btn = document.getElementById('gcb-delete-mode');
+  if (S.mode === 'deleting') {
+    S.mode = 'idle';
+    btn.classList.remove('active');
+    canvas.className = '';
+  } else {
+    S.mode = 'deleting';
+    btn.classList.add('active');
+    document.querySelectorAll('.gcb-gate-btn').forEach(b => b.classList.remove('active'));
+    S.placingGate = null;
+    canvas.className = 'deleting';
+  }
+});
+
+// Clear
+document.getElementById('gcb-clear-btn').addEventListener('click', () => {
+  clearCircuit();
+  S.alice.count = 2; S.alice.values = [0, 1];
+  S.bob.count = 2; S.bob.values = [1, 0];
+  S.outputCount = 1;
+  syncIONodes();
+  updateAll();
+});
+
+// Counter buttons
+document.querySelectorAll('.gcb-counter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (S.step > 0) return;
+    const target = btn.dataset.target;
+    const dir = parseInt(btn.dataset.dir);
+
+    if (target === 'alice') {
+      S.alice.count = Math.max(1, Math.min(6, S.alice.count + dir));
+      while (S.alice.values.length < S.alice.count) S.alice.values.push(0);
+      S.alice.values.length = S.alice.count;
+    } else if (target === 'bob') {
+      S.bob.count = Math.max(1, Math.min(6, S.bob.count + dir));
+      while (S.bob.values.length < S.bob.count) S.bob.values.push(0);
+      S.bob.values.length = S.bob.count;
+    } else if (target === 'output') {
+      S.outputCount = Math.max(1, Math.min(6, S.outputCount + dir));
+    }
+
+    syncIONodes();
+    updateAll();
+  });
+});
+
+// Protocol buttons
+document.getElementById('gcb-proto-step').addEventListener('click', protocolStep);
+document.getElementById('gcb-proto-reset').addEventListener('click', protocolReset);
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    S.mode = 'idle';
+    S.placingGate = null;
+    S.wiringFrom = null;
+    canvas.className = '';
+    document.querySelectorAll('.gcb-gate-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('gcb-delete-mode').classList.remove('active');
+    render();
+  }
+});
+
+/* ══════════════════════════════════════════════════════
+   INITIALIZATION
+══════════════════════════════════════════════════════ */
+loadPreset('and1');
+updateStepUI();
+
+})(); // End IIFE
 
 /* ══════════════════════════════════════════════════════════
    CHAPTER 3 — MALLEABLE ENCRYPTION
