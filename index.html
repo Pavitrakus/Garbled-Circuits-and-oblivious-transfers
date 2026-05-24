@@ -103,89 +103,174 @@
 </section>
 
 <!-- ============================================================ -->
-<!-- CH 2 – GARBLED CIRCUITS                                      -->
+<!-- CH 2 – GARBLED CIRCUITS (General-Purpose Circuit Builder)     -->
 <!-- ============================================================ -->
 <section id="ch2" class="chapter">
   <div class="chapter-shell">
 
     <div class="ch-label">CHAPTER 02</div>
     <h1 class="ch-title">Garbled <em>Circuits</em></h1>
-    <p class="ch-desc">Two parties compute a joint function without revealing their private inputs. Step through the entire protocol interactively.</p>
+    <p class="ch-desc">Build arbitrary Boolean circuits from any combination of gates. Configure inputs for Alice &amp; Bob, garble the circuit, and step through the full Yao protocol — watching secure two-party computation unfold gate by gate.</p>
 
     <div class="game-zone" id="garbled-game">
-      <div class="gc-split">
 
-        <!-- PARTY INPUTS -->
-        <div class="party-panel" id="alice-panel">
-          <div class="party-label">ALICE (Garbler)</div>
-          <div class="party-wealth">
-            <span class="pw-label">Wealth</span>
-            <div class="pw-slider-wrap">
-              <input type="range" min="1" max="9" value="6" id="alice-val" class="pw-slider">
-              <span class="pw-num" id="alice-num">6</span>
-            </div>
-          </div>
-          <div class="wire-box" id="alice-wires">
-            <div class="wb-label">Wire Labels (t)</div>
-            <div class="wire-row">
-              <span class="wire-label-item" id="t0">t₀ = <code id="t0-val">—</code></span>
-              <span class="wire-label-item" id="t1">t₁ = <code id="t1-val">—</code></span>
-            </div>
+      <!-- ─── TOOLBAR ─────────────────────────────────────── -->
+      <div class="gcb-toolbar">
+        <div class="gcb-toolbar-section">
+          <div class="gcb-toolbar-label">GATE PALETTE</div>
+          <div class="gcb-gate-palette" id="gcb-gate-palette">
+            <button class="gcb-gate-btn" data-gate="AND" title="AND Gate">
+              <span class="gcb-gate-icon">&#x2227;</span><span>AND</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="OR" title="OR Gate">
+              <span class="gcb-gate-icon">&#x2228;</span><span>OR</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="XOR" title="XOR Gate">
+              <span class="gcb-gate-icon">&#x2295;</span><span>XOR</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="NAND" title="NAND Gate">
+              <span class="gcb-gate-icon">⊼</span><span>NAND</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="NOR" title="NOR Gate">
+              <span class="gcb-gate-icon">⊽</span><span>NOR</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="XNOR" title="XNOR Gate">
+              <span class="gcb-gate-icon">⊙</span><span>XNOR</span>
+            </button>
+            <button class="gcb-gate-btn" data-gate="NOT" title="NOT Gate">
+              <span class="gcb-gate-icon">¬</span><span>NOT</span>
+            </button>
           </div>
         </div>
 
-        <!-- CIRCUIT CANVAS -->
-        <div class="circuit-center">
-          <div class="circuit-title">AND Gate — Is Alice Richer?</div>
-          <canvas id="gc-canvas" width="340" height="200"></canvas>
-          <div class="gc-table-wrap">
-            <div class="gc-table-label">Garbled Truth Table</div>
-            <table class="garbled-table" id="gc-table">
-              <thead>
-                <tr><th>Row</th><th>Encrypted Output</th><th>Status</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>00</td><td class="et" id="et-00">—</td><td class="es" id="es-00">locked</td></tr>
-                <tr><td>01</td><td class="et" id="et-01">—</td><td class="es" id="es-01">locked</td></tr>
-                <tr><td>10</td><td class="et" id="et-10">—</td><td class="es" id="es-10">locked</td></tr>
-                <tr><td>11</td><td class="et" id="et-11">—</td><td class="es" id="es-11">locked</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="gc-steps">
-            <button class="step-btn" id="gc-step">Step →</button>
-            <div class="step-counter" id="gc-step-counter">Step 0 / 5</div>
+        <div class="gcb-toolbar-section">
+          <div class="gcb-toolbar-label">PRESETS</div>
+          <div class="gcb-preset-btns">
+            <button class="gcb-preset-btn active" data-preset="and1">Single AND</button>
+            <button class="gcb-preset-btn" data-preset="adder">1-bit Adder</button>
+            <button class="gcb-preset-btn" data-preset="compare">Comparator</button>
+            <button class="gcb-preset-btn" data-preset="majority">Majority</button>
+            <button class="gcb-preset-btn" data-preset="custom">Custom ✏</button>
           </div>
         </div>
 
-        <!-- BOB PANEL -->
-        <div class="party-panel" id="bob-panel">
-          <div class="party-label">BOB (Evaluator)</div>
-          <div class="party-wealth">
-            <span class="pw-label">Wealth</span>
-            <div class="pw-slider-wrap">
-              <input type="range" min="1" max="9" value="4" id="bob-val" class="pw-slider">
-              <span class="pw-num" id="bob-num">4</span>
-            </div>
-          </div>
-          <div class="wire-box" id="bob-wires">
-            <div class="wb-label">Wire Labels (s)</div>
-            <div class="wire-row">
-              <span class="wire-label-item" id="s0">s₀ = <code id="s0-val">—</code></span>
-              <span class="wire-label-item" id="s1">s₁ = <code id="s1-val">—</code></span>
-            </div>
-          </div>
-          <div class="ot-display" id="ot-display">
-            <div class="ot-title">Oblivious Transfer</div>
-            <div class="ot-desc">Bob will fetch exactly one wire label without revealing which one.</div>
-            <div class="ot-status" id="ot-status">Waiting…</div>
-          </div>
+        <div class="gcb-toolbar-section gcb-toolbar-actions">
+          <button class="gcb-action-btn" id="gcb-delete-mode" title="Toggle delete mode">✕ Delete</button>
+          <button class="gcb-action-btn gcb-clear-btn" id="gcb-clear-btn" title="Clear circuit">🗑 Clear</button>
         </div>
       </div>
 
+      <!-- ─── MAIN LAYOUT ─────────────────────────────────── -->
+      <div class="gcb-main">
+
+        <!-- CIRCUIT CANVAS -->
+        <div class="gcb-canvas-wrap">
+          <canvas id="gcb-canvas" width="860" height="500"></canvas>
+          <div class="gcb-canvas-hint" id="gcb-canvas-hint">
+            Click a gate type above, then click the canvas to place it · Drag between ports ● to connect wires
+          </div>
+        </div>
+
+        <!-- RIGHT PANEL -->
+        <div class="gcb-panel">
+
+          <!-- Alice Config -->
+          <div class="gcb-panel-section">
+            <div class="gcb-panel-title">ALICE <span class="gcb-role">(Garbler)</span></div>
+            <div class="gcb-input-config">
+              <div class="gcb-input-count-row">
+                <span class="gcb-config-label">Input Bits</span>
+                <div class="gcb-counter">
+                  <button class="gcb-counter-btn" data-target="alice" data-dir="-1">−</button>
+                  <span id="gcb-alice-count">2</span>
+                  <button class="gcb-counter-btn" data-target="alice" data-dir="1">+</button>
+                </div>
+              </div>
+              <div class="gcb-bit-toggles" id="gcb-alice-bits"></div>
+            </div>
+          </div>
+
+          <!-- Bob Config -->
+          <div class="gcb-panel-section">
+            <div class="gcb-panel-title gcb-bob-title">BOB <span class="gcb-role">(Evaluator)</span></div>
+            <div class="gcb-input-config">
+              <div class="gcb-input-count-row">
+                <span class="gcb-config-label">Input Bits</span>
+                <div class="gcb-counter">
+                  <button class="gcb-counter-btn" data-target="bob" data-dir="-1">−</button>
+                  <span id="gcb-bob-count">2</span>
+                  <button class="gcb-counter-btn" data-target="bob" data-dir="1">+</button>
+                </div>
+              </div>
+              <div class="gcb-bit-toggles" id="gcb-bob-bits"></div>
+            </div>
+          </div>
+
+          <!-- Output Config -->
+          <div class="gcb-panel-section">
+            <div class="gcb-panel-title gcb-out-title">OUTPUTS</div>
+            <div class="gcb-input-config">
+              <div class="gcb-input-count-row">
+                <span class="gcb-config-label">Output Wires</span>
+                <div class="gcb-counter">
+                  <button class="gcb-counter-btn" data-target="output" data-dir="-1">−</button>
+                  <span id="gcb-output-count">1</span>
+                  <button class="gcb-counter-btn" data-target="output" data-dir="1">+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Protocol Simulation -->
+          <div class="gcb-panel-section gcb-proto-section">
+            <div class="gcb-panel-title gcb-proto-title">PROTOCOL SIMULATION</div>
+            <div class="gcb-step-display">
+              <div class="gcb-step-num" id="gcb-step-num">0</div>
+              <div class="gcb-step-of">/ 6</div>
+            </div>
+            <div class="gcb-step-name" id="gcb-step-name">Ready</div>
+            <div class="gcb-step-desc" id="gcb-step-desc">Configure your circuit and inputs, then begin the Yao protocol.</div>
+            <div class="gcb-proto-controls">
+              <button class="gcb-proto-btn" id="gcb-proto-step">▶ Step →</button>
+              <button class="gcb-proto-btn gcb-proto-reset" id="gcb-proto-reset">↺ Reset</button>
+            </div>
+          </div>
+
+          <!-- Stats -->
+          <div class="gcb-panel-section gcb-stats-section">
+            <div class="gcb-panel-title gcb-stats-title">CIRCUIT METRICS</div>
+            <div class="gcb-stat-row"><span>Gates</span><span id="gcb-stat-gates">0</span></div>
+            <div class="gcb-stat-row"><span>Wires</span><span id="gcb-stat-wires">0</span></div>
+            <div class="gcb-stat-row"><span>Depth</span><span id="gcb-stat-depth">0</span></div>
+            <div class="gcb-stat-row"><span>Comm. Cost</span><span id="gcb-stat-cost">0 ct</span></div>
+            <div class="gcb-stat-row"><span>Enc. Ops</span><span id="gcb-stat-enc">0</span></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ─── GARBLED TABLE INSPECTOR ─────────────────────── -->
+      <div class="gcb-inspector" id="gcb-inspector">
+        <div class="gcb-inspector-header">
+          <div class="gcb-inspector-title">GARBLED TABLE INSPECTOR</div>
+          <div class="gcb-inspector-hint" id="gcb-inspector-hint">Tables appear after garbling (Step 3)</div>
+        </div>
+        <div class="gcb-inspector-tables" id="gcb-inspector-tables"></div>
+      </div>
+
+      <!-- ─── WIRE LABELS PANEL ───────────────────────────── -->
+      <div class="gcb-wire-panel" id="gcb-wire-panel">
+        <div class="gcb-inspector-header">
+          <div class="gcb-inspector-title">WIRE LABELS</div>
+          <div class="gcb-inspector-hint" id="gcb-wire-hint">Labels appear after generation (Step 2)</div>
+        </div>
+        <div class="gcb-wire-grid" id="gcb-wire-grid"></div>
+      </div>
+
+      <!-- ─── RESULT BAR ──────────────────────────────────── -->
       <div class="gc-result-bar" id="gc-result-bar">
         <div class="grb-inner" id="grb-inner">
-          Compute to reveal result…
+          Build a circuit and run the protocol to see results…
         </div>
       </div>
     </div>
@@ -193,7 +278,7 @@
     <div class="callout">
       <div class="callout-icon">🔑</div>
       <div>
-        Each gate requires <strong>4 × 128-bit encryptions</strong>. Entire circuits can be gigabytes in size — that's why optimizations (Chapter 6) matter enormously.
+        Each 2-input gate requires <strong>4 × 128-bit encryptions</strong>. A NOT gate only needs 2. Entire circuits can be gigabytes — that's why optimizations (Chapter 6) matter enormously. <strong>Free XOR</strong> makes XOR gates cost 0 communication, while <strong>Half Gates</strong> reduces AND gates to 2 ciphertexts.
       </div>
     </div>
 
